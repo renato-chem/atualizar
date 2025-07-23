@@ -1,7 +1,15 @@
+# Requer execução como administrador
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "Este script precisa ser executado como administrador." -ForegroundColor Red
-    Write-Host "Por favor, execute em um prompt do PowerShell elevado." -ForegroundColor Red
-    exit
+    Write-Host "Tentando reiniciar como administrador..." -ForegroundColor Yellow
+    Start-Process pwsh "-NoProfile -ExecutionPolicy Bypass -Command `"$($MyInvocation.MyCommand.Definition)`"" -Verb RunAs
+    Exit
+}
+
+# Verificar política de execução
+if ((Get-ExecutionPolicy -Scope CurrentUser) -eq 'Restricted') {
+    Write-Host "A política de execução do PowerShell está restrita. Configurando para Bypass..." -ForegroundColor Yellow
+    Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Bypass -Force
 }
 
 $global:errors = @()
@@ -9,17 +17,19 @@ function Log-Error { param($msg) $global:errors += "$(Get-Date -Format 'yyyy-MM-
 
 # Verificar internet
 if (-not (Test-Connection 8.8.8.8 -Count 2 -Quiet)) {
-    Log-Error "Sem conexão com internet"
+    Log-Error "Sem conexão com internet. Verifique sua conexão e tente novamente."
+    Write-Host "Fechando em 10 segundos..." -ForegroundColor Yellow
+    Start-Sleep 10
     exit
 }
 
 Write-Host "Atualizando WinGet..." -ForegroundColor Cyan
-try { winget upgrade --id Microsoft.Winget.Source --silent --accept-source-agreements --accept-package-agreements --disable-interactivity 2>&1 | Out-Null } catch { Log-Error "Winget: $_" }
+try { winget upgrade --id Microsoft.Winget.Source --silent --accept-source-agreements --accept-package-agreements --disable-interactivity 2>&1 | Out-Null } catch { Log-Error "WinGet: $($_.Exception.Message)" }
 
 Write-Host "Atualizando Chocolatey..." -ForegroundColor Cyan
-try { choco upgrade chocolatey -y --no-progress 2>&1 | Out-Null } catch { Log-Error "Chocolatey: $_" }
+try { choco upgrade chocolatey -y --no-progress 2>&1 | Out-Null } catch { Log-Error "Chocolatey: $($_.Exception.Message)" }
 
-Write-Host "Verificando atualizações da Store..." -ForegroundColor Cyan
+Write-Host "Verificando atualizações da Microsoft Store..." -ForegroundColor Cyan
 try {
     $result = Get-CimInstance -Namespace "Root\cimv2\mdm\dmmap" -ClassName "MDM_EnterpriseModernAppManagement_AppManagement01" |
               Invoke-CimMethod -MethodName "UpdateScanMethod"
@@ -43,7 +53,7 @@ try {
             Log-Error "Office 365 falhou com código $($process.ExitCode)"
         }
     } else {
-        Log-Error "OfficeC2RClient não encontrado"
+        Log-Error "OfficeC2RClient não encontrado. Office 365 pode não estar instalado."
     }
 } catch {
     Log-Error "Office 365: $($_.Exception.Message)"
@@ -68,7 +78,7 @@ foreach ($b in $browsers) {
             choco upgrade $b.ChocoId -y --no-progress 2>&1 | Out-Null
         }
     } catch {
-        Log-Error "Navegador $($b.Name): $_"
+        Log-Error "Navegador $($b.Name): $($_.Exception.Message)"
     }
 }
 
@@ -81,7 +91,7 @@ try {
         choco upgrade powershell-core -y --no-progress 2>&1 | Out-Null
     }
 } catch {
-    Log-Error "PowerShell: $_"
+    Log-Error "PowerShell: $($_.Exception.Message)"
 }
 
 Write-Host "Atualizando módulos do PowerShell..." -ForegroundColor Cyan
@@ -91,11 +101,11 @@ try {
         try {
             Update-Module -Name $module.Name -Force
         } catch {
-            Log-Error "Módulo PowerShell $($module.Name): $_"
+            Log-Error "Módulo PowerShell $($module.Name): $($_.Exception.Message)"
         }
     }
 } catch {
-    Log-Error "Erro ao obter módulos instalados: $_"
+    Log-Error "Erro ao obter módulos instalados: $($_.Exception.Message)"
 }
 
 Write-Host "Atualizando WSL..." -ForegroundColor Cyan
@@ -138,19 +148,19 @@ if (Get-Command wsl -ErrorAction SilentlyContinue) {
                     fi
                 " 2>&1 | Out-Null
                 if ($LASTEXITCODE -ne 0) {
-                    Log-Error "Distro $distro: falha na atualização (código $LASTEXITCODE)"
+                    Log-Error "Distro ${distro}: falha na atualização (código $LASTEXITCODE)"
                 }
             }
         }
     } catch {
-        Log-Error "Erro ao atualizar WSL: $_"
+        Log-Error "Erro ao atualizar WSL: $($_.Exception.Message)"
     }
 }
 
 $logPath = "$PWD\fail.log"
-if ($global:errors.Count > 0) {
+if ($global:errors.Count -gt 0) {
     $global:errors | Out-File $logPath -Encoding UTF8
-    Write-Host "Concluído com erros. Verifique $logPath" -ForegroundColor Yellow
+    Write-Host "Concluído com erros. Verifique $logPath para detalhes." -ForegroundColor Yellow
 } else {
     "Sucesso $(Get-Date)" | Out-File $logPath -Encoding UTF8
     Write-Host "Concluído sem erros!" -ForegroundColor Green
